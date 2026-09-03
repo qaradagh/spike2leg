@@ -103,6 +103,13 @@ python -m backtest.tp_sweep --data <data_dir> --out results
 # تست کنترل: آیا ورودِ استراتژی از ورودِ تصادفی بهتر است؟
 python -m backtest.entry_control --data <data_dir> --tp 3.0 --runs 30
 
+# جست‌وجوی تنظیمات با تفکیک in-sample / out-of-sample
+python -m backtest.optimise --data <data_dir> --symbols xauusd us30 \
+    --timeframes M1 M5 M15 H1 --out results
+
+# اعتبارسنجی walk-forward: انتخاب تنظیمات فقط از گذشته
+python -m backtest.walkforward --data <data_dir> --folds 5 --out results
+
 # تست‌های موتور
 python -m backtest.test_engine
 ```
@@ -110,6 +117,28 @@ python -m backtest.test_engine
 `<data_dir>` باید ساختار `<symbol>/<feed>, <timeframe>_<hash>.csv` داشته باشد
 (خروجی استاندارد TradingView). هر نماد باید یک `SymbolSpec` در
 `backtest/config.py` داشته باشد تا آستانه‌های point-محور درست تبدیل شوند.
+
+### فیلتر زمانی
+
+`use_time_filter` ورود را فقط در ساعت‌هایی که طراح استراتژی (آقای پورصمدی)
+اعلام کرده مجاز می‌کند. ساعت‌ها به **وقت تهران** در `entry_times` تعریف شده‌اند
+و هر کدام یک پنجره به طول `time_window_minutes` باز می‌کنند:
+
+| تهران | نیویورک (تابستان) | |
+| --- | --- | --- |
+| 09:00 | 01:30 | |
+| 10:00 | 02:30 | |
+| 14:00 | 06:30 | |
+| 15:30 | 08:00 | |
+| 16:30 | 09:00 | |
+| 17:00 | 09:30 | باز شدن NYSE |
+| 18:00 | 10:30 | |
+| 18:30 | 11:00 | |
+| 21:00 | 13:30 | |
+| 23:00 | 15:30 | نیم ساعت مانده به بسته شدن |
+
+ایران از ۲۰۲۲ ساعت تابستانی ندارد، پس آفست ثابت UTC+3:30 است و پنجره‌ها در
+طول سال جابه‌جا نمی‌شوند — ولی ساعت نیویورکِ متناظرشان جابه‌جا می‌شود.
 
 ### مدل ورود
 
