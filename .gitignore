@@ -28,6 +28,11 @@ credentials.json
 *.pkl
 logs/
 data/
+.venv/
+
+# Backtest output: summary tables are committed, per-trade dumps are not
+!results/*.csv
+results/trades/
 
 # Editors / OS
 .vscode/
