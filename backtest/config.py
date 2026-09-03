@@ -100,6 +100,28 @@ class Config:
     session_end_hour: int = 5
     session_timezone: str = "America/New_York"
 
+    # The strategy's author trades it only at a fixed list of clock times,
+    # given in Tehran local time. Entries are allowed from each listed time
+    # until ``time_window_minutes`` later, and blocked otherwise. Tehran has
+    # had no daylight saving since 2022, so the offset is a flat UTC+3:30
+    # and the windows do not shift through the year; the New York times they
+    # line up with do shift.
+    use_time_filter: bool = False
+    entry_times: tuple[str, ...] = (
+        "09:00",  # 01:30 New York
+        "10:00",  # 02:30
+        "14:00",  # 06:30
+        "15:30",  # 08:00
+        "16:30",  # 09:00
+        "17:00",  # 09:30, the NYSE open
+        "18:00",  # 10:30
+        "18:30",  # 11:00
+        "21:00",  # 13:30
+        "23:00",  # 15:30, half an hour before the close
+    )
+    time_window_minutes: int = 60
+    entry_timezone: str = "Asia/Tehran"
+
     # --- Second entry -----------------------------------------------------
     use_second_entry: bool = False
     second_entry_volume_multiplier: float = 2.0

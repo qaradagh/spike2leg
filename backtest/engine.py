@@ -138,6 +138,38 @@ def _session_mask(index: pd.DatetimeIndex, cfg: Config) -> np.ndarray:
     return (local_times >= start) | (local_times < end)
 
 
+def _time_window_mask(index: pd.DatetimeIndex, cfg: Config) -> np.ndarray:
+    """True where the bar opens inside one of the author's trading windows."""
+
+    if not cfg.use_time_filter:
+        return np.ones(len(index), dtype=bool)
+
+    stamps = index
+
+    if stamps.tz is None:
+        stamps = stamps.tz_localize("UTC")
+
+    local = stamps.tz_convert(ZoneInfo(cfg.entry_timezone))
+    minute_of_day = local.hour * 60 + local.minute
+
+    allowed = np.zeros(len(index), dtype=bool)
+
+    for entry in cfg.entry_times:
+        hour, minute = (int(part) for part in entry.split(":"))
+        start = hour * 60 + minute
+        end = start + cfg.time_window_minutes
+
+        if end <= 24 * 60:
+            allowed |= (minute_of_day >= start) & (minute_of_day < end)
+        else:
+            # The window runs past midnight.
+            allowed |= (minute_of_day >= start) | (
+                minute_of_day < end - 24 * 60
+            )
+
+    return allowed
+
+
 def _setup_masks(
     o: np.ndarray,
     h: np.ndarray,
@@ -238,6 +270,7 @@ def detect_signals(
     trend_ema = ema(c, cfg.ema_period) if cfg.use_ema_filter else None
     bar_adx = adx(h, l, c, cfg.adx_period) if cfg.use_range_filter else None
     in_session = _session_mask(df.index, cfg)
+    in_window = _time_window_mask(df.index, cfg)
 
     rejected_stops = 0
 
@@ -254,6 +287,9 @@ def detect_signals(
                 return False
 
         if not in_session[pos]:
+            return False
+
+        if not in_window[pos]:
             return False
 
         return True

@@ -273,6 +273,45 @@ def test_spread_is_charged_against_the_entry():
     assert approx(without["R"] - with_cost["R"], expected_drop)
 
 
+def test_time_filter_allows_only_the_listed_windows():
+    from .engine import _time_window_mask
+
+    day = pd.date_range(
+        "2026-08-20 00:00", periods=24 * 60, freq="1min", tz="UTC"
+    )
+
+    cfg = BASE.with_(use_time_filter=True, time_window_minutes=30)
+    mask = _time_window_mask(day, cfg)
+
+    local = day.tz_convert("Asia/Tehran")
+    minutes = local.hour * 60 + local.minute
+
+    # Ten listed times, half an hour each, but 16:30/17:00 and 18:00/18:30
+    # are adjacent and merge into one window apiece.
+    assert mask.sum() == 10 * 30
+
+    # The NYSE open at 17:00 Tehran is in; ten minutes before it is not.
+    assert mask[minutes == 17 * 60][0]
+    assert mask[minutes == 17 * 60 + 29][0]
+    assert not mask[minutes == 16 * 60 + 20][0]
+    assert not mask[minutes == 17 * 60 + 30][0]
+
+    # Off by default, everything passes.
+    assert _time_window_mask(day, BASE).all()
+
+
+def test_time_filter_can_block_a_setup_entirely():
+    df = frame([(113.2, 124.0, 113.0, 123.5)])
+
+    assert len(detect_signals(df, BASE, SPEC)[0]) == 1
+
+    # The fixture's bars sit at 00:00 UTC, which is 03:30 in Tehran and in
+    # none of the windows.
+    blocked = BASE.with_(use_time_filter=True)
+
+    assert detect_signals(df, blocked, SPEC)[0] == []
+
+
 def test_flat_series_produces_nothing():
     bars = [(100.0, 100.5, 99.5, 100.0)] * 50
 
