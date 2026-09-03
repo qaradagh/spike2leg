@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.Python
+build/
+dist/
+
+# Virtual environments
+myenv/
+venv/
+.venv/
+env/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Secrets / local config
+.env
+*.env
+config.local.py
+credentials.json
+
+# Logs & data
+*.log
+*.csv
+*.pkl
+logs/
+data/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

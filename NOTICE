@@ -1,0 +1,20 @@
+spike2leg
+=========
+
+This project is derived from the "SP2L" directory of the PythonTraderBot
+project by Alireza Sadabadi:
+
+    https://github.com/AlirezaSadabadi/PythonTraderBot/tree/main/code/SP2L
+
+Original work:
+    Copyright (c) 2024-2026 Alireza Sadabadi
+    Licensed under the Apache License, Version 2.0
+
+The original code was copied with the author's permission and is used and
+modified here under the terms of the Apache License 2.0. A copy of the
+license is included in the LICENSE file at the root of this repository.
+
+Imported from upstream commit:
+    e31637227d0924ecab50de8941a8e20a72c71597 ("add Advanced SP2L Bot")
+
+Modifications made in this repository are documented in the git history.
