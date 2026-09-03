@@ -42,8 +42,13 @@ class Dataset:
     spec: SymbolSpec
 
 
-def discover_datasets(root: str) -> list[Dataset]:
-    """Find every ``<root>/<symbol>/<feed>, <tf>_<hash>.csv`` export."""
+def discover_datasets(
+    root: str, timeframes: list[str] | None = None
+) -> list[Dataset]:
+    """Find every ``<root>/<symbol>/<feed>, <tf>_<hash>.csv`` export.
+
+    ``timeframes`` keeps only the named ones, e.g. ``["M1", "M5"]``.
+    """
 
     datasets: list[Dataset] = []
 
@@ -76,6 +81,9 @@ def discover_datasets(root: str) -> list[Dataset]:
                 raise ValueError(
                     f"Unknown timeframe '{match.group('tf')}' in {name}"
                 )
+
+            if timeframes is not None and timeframe not in timeframes:
+                continue
 
             datasets.append(
                 Dataset(

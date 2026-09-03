@@ -31,13 +31,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", required=True)
     parser.add_argument("--out", default="results")
+    parser.add_argument(
+        "--timeframes",
+        nargs="+",
+        help="Limit to these timeframes, e.g. M1 M5",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
     rows: list[dict] = []
 
-    for dataset in discover_datasets(args.data):
+    for dataset in discover_datasets(args.data, args.timeframes):
         df = load_ohlc(dataset.path)
 
         for regime, fraction, charge_spread in REGIMES:
@@ -78,36 +83,58 @@ def main() -> None:
 
     detail.to_csv(os.path.join(args.out, "tp_sweep.csv"), index=False)
 
-    summary = []
-
-    for (regime, target), group in detail.groupby(["regime", "tp_r"]):
+    def aggregate(group: pd.DataFrame) -> dict:
         trades = int(group["trades"].sum())
         bars = int(group["bars"].sum())
 
-        summary.append(
-            {
-                "regime": regime,
-                "tp_r": target,
-                "trades": trades,
-                "win_rate": (
-                    100 * group["wins"].sum() / trades if trades else np.nan
-                ),
-                # A target of nR needs this win rate just to break even.
-                "breakeven_win_rate": 100 / (1 + target),
-                "total_R": group["total_R"].sum(),
-                "expectancy_R": (
-                    group["total_R"].sum() / trades if trades else np.nan
-                ),
-                # Opportunity-adjusted: R earned per 10k bars of market time.
-                "R_per_10k_bars": group["total_R"].sum() / bars * 10_000,
-                "avg_bars_held": float(
-                    (group["avg_bars_held"] * group["trades"]).sum() / trades
-                )
+        return {
+            "trades": trades,
+            "win_rate": (
+                100 * group["wins"].sum() / trades if trades else np.nan
+            ),
+            # A target of nR needs this win rate just to break even.
+            "breakeven_win_rate": 100 / (1 + group.name[-1])
+            if isinstance(group.name, tuple)
+            else np.nan,
+            "total_R": group["total_R"].sum(),
+            "expectancy_R": (
+                group["total_R"].sum() / trades if trades else np.nan
+            ),
+            # Opportunity-adjusted: R earned per 10k bars of market time.
+            "R_per_10k_bars": group["total_R"].sum() / bars * 10_000,
+            "avg_bars_held": (
+                float((group["avg_bars_held"] * group["trades"]).sum() / trades)
                 if trades
-                else np.nan,
-                "profitable_datasets": int((group["total_R"] > 0).sum()),
-                "unresolved": int(group["unresolved"].sum()),
-            }
+                else np.nan
+            ),
+            "profitable_datasets": int((group["total_R"] > 0).sum()),
+            "datasets": len(group),
+            "unresolved": int(group["unresolved"].sum()),
+        }
+
+    summary = []
+
+    for (regime, target), group in detail.groupby(["regime", "tp_r"]):
+        # Per timeframe first. The exports nest -- M5's window sits inside
+        # M15's, which sits inside H1's -- so the same price action appears
+        # at up to six resolutions and a single pooled row would count it
+        # that many times. The pooled row is kept for scale, not for
+        # significance.
+        for timeframe, rows_tf in group.groupby("timeframe"):
+            rows_tf.name = (regime, timeframe, target)
+            summary.append(
+                {
+                    "regime": regime,
+                    "timeframe": timeframe,
+                    "tp_r": target,
+                    **aggregate(rows_tf),
+                }
+            )
+
+        group.name = (regime, "ALL", target)
+        summary.append(
+            {"regime": regime, "timeframe": "ALL (overlapping)", "tp_r": target,
+             **aggregate(group)}
         )
 
     summary = pd.DataFrame(summary)
@@ -122,6 +149,11 @@ def main() -> None:
             .round(3)
             .to_string(index=False)
         )
+
+    print(
+        "\nRows marked ALL (overlapping) pool timeframes whose windows nest "
+        "inside one another; read the per-timeframe rows for significance."
+    )
 
 
 if __name__ == "__main__":
