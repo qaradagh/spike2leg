@@ -1,0 +1,24 @@
+target 1.0R · live fill · spread charged · 30 runs
+
+  strategy         total R     +99.7   (3984 trades)
+  random timing    total R    -425.4 ± 74.5   strategy is 7.1 sd above; 0/30 runs beat it
+  random direction total R    -411.9 ± 65.0   strategy is 7.9 sd above; 0/30 runs beat it
+
+target 2.0R · live fill · spread charged · 30 runs
+
+  strategy         total R    +393.4   (3767 trades)
+  random timing    total R    -319.4 ± 92.4   strategy is 7.7 sd above; 0/30 runs beat it
+  random direction total R    -295.6 ± 84.3   strategy is 8.2 sd above; 0/30 runs beat it
+
+target 3.0R · live fill · spread charged · 30 runs
+
+  strategy         total R    +585.5   (3552 trades)
+  random timing    total R    -256.3 ± 106.6   strategy is 7.9 sd above; 0/30 runs beat it
+  random direction total R    -240.1 ± 92.1   strategy is 9.0 sd above; 0/30 runs beat it
+
+target 5.0R · live fill · spread charged · 30 runs
+
+  strategy         total R    +646.9   (3227 trades)
+  random timing    total R    -159.5 ± 123.3   strategy is 6.5 sd above; 0/30 runs beat it
+  random direction total R    -202.1 ± 107.6   strategy is 7.9 sd above; 0/30 runs beat it
+

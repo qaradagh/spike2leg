@@ -97,6 +97,12 @@ python -m backtest.run_grid --data <data_dir> --out results
 # حساسیت نتیجه به قیمت فرضی پرشدن سفارش
 python -m backtest.fill_sensitivity --data <data_dir> --out results --spread
 
+# جاروب حد سود
+python -m backtest.tp_sweep --data <data_dir> --out results
+
+# تست کنترل: آیا ورودِ استراتژی از ورودِ تصادفی بهتر است؟
+python -m backtest.entry_control --data <data_dir> --tp 3.0 --runs 30
+
 # تست‌های موتور
 python -m backtest.test_engine
 ```
