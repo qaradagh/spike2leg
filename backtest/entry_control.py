@@ -46,6 +46,11 @@ def synthetic(pos, direction, price, risk, tp_r) -> Signal:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", required=True)
+    parser.add_argument(
+        "--timeframes",
+        nargs="+",
+        help="Limit to these timeframes, e.g. M1 M5",
+    )
     parser.add_argument("--tp", type=float, default=3.0)
     parser.add_argument("--runs", type=int, default=30)
     parser.add_argument("--seed", type=int, default=20260903)
@@ -58,7 +63,7 @@ def main() -> None:
     timing = np.zeros(args.runs)
     flipped = np.zeros(args.runs)
 
-    for dataset in discover_datasets(args.data):
+    for dataset in discover_datasets(args.data, args.timeframes):
         df = load_ohlc(dataset.path)
 
         cfg = Config(

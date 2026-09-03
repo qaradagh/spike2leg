@@ -103,6 +103,11 @@ def main() -> None:
     )
     parser.add_argument("--out", default="results", help="Output directory")
     parser.add_argument(
+        "--timeframes",
+        nargs="+",
+        help="Limit to these timeframes, e.g. M1 M5",
+    )
+    parser.add_argument(
         "--save-trades",
         action="store_true",
         help="Write the full trade list of every run",
@@ -111,7 +116,7 @@ def main() -> None:
 
     os.makedirs(args.out, exist_ok=True)
 
-    datasets = discover_datasets(args.data)
+    datasets = discover_datasets(args.data, args.timeframes)
     configs = build_configs()
 
     rows: list[dict] = []

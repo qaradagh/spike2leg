@@ -26,6 +26,11 @@ def main() -> None:
     parser.add_argument("--data", required=True)
     parser.add_argument("--out", default="results")
     parser.add_argument(
+        "--timeframes",
+        nargs="+",
+        help="Limit to these timeframes, e.g. M1 M5",
+    )
+    parser.add_argument(
         "--spread",
         action="store_true",
         help="Also charge each symbol's typical spread",
@@ -36,7 +41,7 @@ def main() -> None:
 
     rows: list[dict] = []
 
-    for dataset in discover_datasets(args.data):
+    for dataset in discover_datasets(args.data, args.timeframes):
         df = load_ohlc(dataset.path)
 
         for fraction in FRACTIONS:
