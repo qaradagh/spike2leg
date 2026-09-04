@@ -43,8 +43,14 @@ GRID = {
 TARGETS = [1.0, 2.0, 3.0, 5.0]
 
 IN_SAMPLE_FRACTION = 0.65
-MIN_IN_SAMPLE_TRADES = 25
-MIN_OUT_OF_SAMPLE_TRADES = 15
+
+# Picking from tens of thousands of settings on a couple of dozen trades
+# selects for small samples, not for good settings: the highest in-sample
+# expectancy in the grid will be whichever rare setting happened to catch a
+# good run. These floors, and ranking by t rather than by expectancy, are
+# what keep the search from doing that.
+MIN_IN_SAMPLE_TRADES = 120
+MIN_OUT_OF_SAMPLE_TRADES = 60
 
 
 def retarget(signals: list[Signal], tp_r: float) -> list[Signal]:
@@ -90,14 +96,35 @@ def stats(r: pd.Series) -> tuple[int, float, float]:
     )
 
 
-def search_one(df: pd.DataFrame, spec, symbol: str, timeframe: str) -> list[dict]:
-    split_at = df.index[int(len(df) * IN_SAMPLE_FRACTION)]
-
-    base = Config(
-        entry_mode="fill_fraction",
-        fill_fraction=0.2,
-        spread_points=spec.typical_spread_points,
+def config_for(base: Config, settings: dict) -> Config:
+    return base.with_(
+        spike_candle_size=settings["spike_candle_size"],
+        pgap_points=settings["pgap_points"],
+        max_sl_distance_points=settings["max_sl_distance_points"],
+        use_ema_filter=settings["ema_period"] > 0,
+        ema_period=max(settings["ema_period"], 2),
+        use_trend_filter=settings["max_opposite_moves"] >= 0,
+        max_opposite_moves=max(settings["max_opposite_moves"], 0),
+        use_time_filter=settings["time_window_minutes"] > 0,
+        time_window_minutes=max(settings["time_window_minutes"], 1),
     )
+
+
+def search(datasets, frames: dict, timeframe: str) -> list[dict]:
+    """Score every setting on all the given symbols at once.
+
+    One setting has to earn its keep on gold and the Dow together, which is
+    what the strategy claims anyway and halves the room to fit either one's
+    noise. Each symbol is split at its own date, since their histories start
+    and end in different places.
+    """
+
+    splits = {
+        d.symbol: frames[d.symbol].index[
+            int(len(frames[d.symbol]) * IN_SAMPLE_FRACTION)
+        ]
+        for d in datasets
+    }
 
     rows: list[dict] = []
     keys = list(GRID)
@@ -105,43 +132,61 @@ def search_one(df: pd.DataFrame, spec, symbol: str, timeframe: str) -> list[dict
     for values in itertools.product(*(GRID[k] for k in keys)):
         settings = dict(zip(keys, values))
 
-        cfg = base.with_(
-            spike_candle_size=settings["spike_candle_size"],
-            pgap_points=settings["pgap_points"],
-            max_sl_distance_points=settings["max_sl_distance_points"],
-            use_ema_filter=settings["ema_period"] > 0,
-            ema_period=max(settings["ema_period"], 2),
-            use_trend_filter=settings["max_opposite_moves"] >= 0,
-            max_opposite_moves=max(settings["max_opposite_moves"], 0),
-            use_time_filter=settings["time_window_minutes"] > 0,
-            time_window_minutes=max(settings["time_window_minutes"], 1),
-        )
+        found = {}
 
-        signals, _ = detect_signals(df, cfg, spec)
-
-        if len(signals) < MIN_IN_SAMPLE_TRADES:
-            continue
+        for dataset in datasets:
+            base = Config(
+                entry_mode="fill_fraction",
+                fill_fraction=0.2,
+                spread_points=dataset.spec.typical_spread_points,
+            )
+            cfg = config_for(base, settings)
+            signals, _ = detect_signals(frames[dataset.symbol], cfg, dataset.spec)
+            found[dataset.symbol] = (cfg, signals)
 
         for target in TARGETS:
-            trades = simulate(
-                df, retarget(signals, target), cfg.with_(tp_r=target), spec
-            )
+            early: list[np.ndarray] = []
+            late: list[np.ndarray] = []
+            per_symbol: dict[str, float] = {}
 
-            if trades.empty:
+            for dataset in datasets:
+                cfg, signals = found[dataset.symbol]
+
+                if not signals:
+                    continue
+
+                trades = simulate(
+                    frames[dataset.symbol],
+                    retarget(signals, target),
+                    cfg.with_(tp_r=target),
+                    dataset.spec,
+                )
+
+                if trades.empty:
+                    continue
+
+                is_early = trades["entry_time"] < splits[dataset.symbol]
+                early.append(trades["R"].to_numpy()[is_early.to_numpy()])
+                late.append(trades["R"].to_numpy()[~is_early.to_numpy()])
+                per_symbol[dataset.symbol] = float(trades["R"].mean())
+
+            if not early or not late:
                 continue
 
-            early = trades[trades["entry_time"] < split_at]["R"]
-            late = trades[trades["entry_time"] >= split_at]["R"]
+            a = pd.Series(np.concatenate(early))
+            b = pd.Series(np.concatenate(late))
 
-            n_is, exp_is, t_is = stats(early)
-            n_oos, exp_oos, t_oos = stats(late)
+            n_is, exp_is, t_is = stats(a)
+            n_oos, exp_oos, t_oos = stats(b)
 
             if n_is < MIN_IN_SAMPLE_TRADES or n_oos < MIN_OUT_OF_SAMPLE_TRADES:
                 continue
 
+            # Every symbol has to pull its weight, not be carried.
+            worst = min(per_symbol.values()) if per_symbol else np.nan
+
             rows.append(
                 {
-                    "symbol": symbol,
                     "timeframe": timeframe,
                     **settings,
                     "tp_r": target,
@@ -151,42 +196,43 @@ def search_one(df: pd.DataFrame, spec, symbol: str, timeframe: str) -> list[dict
                     "n_oos": n_oos,
                     "exp_oos": exp_oos,
                     "t_oos": t_oos,
-                    "total_R": float(trades["R"].sum()),
+                    "worst_symbol_exp": worst,
+                    **{f"exp_{k}": v for k, v in per_symbol.items()},
                 }
             )
 
     return rows
 
 
-def report(results: pd.DataFrame, symbol: str, timeframe: str) -> None:
-    subset = results[
-        (results.symbol == symbol) & (results.timeframe == timeframe)
-    ]
+def report(results: pd.DataFrame, timeframe: str, rank_by: str) -> None:
+    subset = results[results.timeframe == timeframe]
 
-    print(f"\n{'=' * 78}\n{symbol.upper()} {timeframe}  --  {len(subset)} settings survived the trade minimums")
+    print(f"\n{'=' * 92}")
+    print(
+        f"{timeframe}  --  {len(subset):,} settings cleared "
+        f"{MIN_IN_SAMPLE_TRADES}/{MIN_OUT_OF_SAMPLE_TRADES} trades in and out of sample"
+    )
 
     if subset.empty:
+        print("  nothing cleared the trade floors")
         return
 
     # Spearman without pulling in scipy: Pearson over the ranks.
     correlation = subset["exp_is"].rank().corr(subset["exp_oos"].rank())
 
-    print(f"  IS/OOS rank correlation across all settings : {correlation:+.3f}")
-    print(
-        f"  best OOS of any setting (the luck ceiling)  : "
-        f"{subset['exp_oos'].max():+.3f} R"
-    )
-    print(
-        f"  median OOS across all settings              : "
-        f"{subset['exp_oos'].median():+.3f} R"
-    )
+    # With this many settings tried, an in-sample t only means something if
+    # it clears the multiple-comparison bar, not the usual 2.
+    print(f"  IS/OOS rank correlation over every setting : {correlation:+.3f}")
+    print(f"  median OOS across all settings             : {subset['exp_oos'].median():+.3f} R")
+    print(f"  best OOS of any setting (the luck ceiling) : {subset['exp_oos'].max():+.3f} R")
+    print(f"  settings with OOS above zero               : {(subset['exp_oos'] > 0).mean() * 100:.0f}%")
 
-    best = subset.sort_values("exp_is", ascending=False).head(8)
+    best = subset.sort_values(rank_by, ascending=False).head(8)
 
-    print("\n  ranked by in-sample only; the OOS columns are what happened next")
+    print(f"\n  ranked by {rank_by} in-sample only; OOS columns are what happened next")
     print(
         "  spike  gap   maxSL  ema  trend  window   TP |"
-        "   n_is   exp_is   t_is |  n_oos  exp_oos  t_oos"
+        "   n_is   exp_is   t_is |  n_oos  exp_oos  t_oos | worst sym"
     )
 
     for _, row in best.iterrows():
@@ -199,15 +245,16 @@ def report(results: pd.DataFrame, symbol: str, timeframe: str) -> None:
             f"{int(row.max_sl_distance_points):6d} {str(ema):>4s} "
             f"{str(trend):>6s} {window:>7s} {row.tp_r:4.1f} |"
             f" {int(row.n_is):5d} {row.exp_is:+8.3f} {row.t_is:6.2f} |"
-            f" {int(row.n_oos):5d} {row.exp_oos:+8.3f} {row.t_oos:6.2f}"
+            f" {int(row.n_oos):5d} {row.exp_oos:+8.3f} {row.t_oos:6.2f} |"
+            f" {row.worst_symbol_exp:+9.3f}"
         )
 
     chosen = best.iloc[0]
-    beat = (subset["exp_oos"] > chosen["exp_oos"]).mean() * 100
+    beaten = (subset["exp_oos"] > chosen["exp_oos"]).mean() * 100
 
     print(
-        f"\n  the in-sample winner's OOS result is beaten by {beat:.0f}% of "
-        f"all settings tried"
+        f"\n  the chosen setting's OOS result is beaten by {beaten:.0f}% of all "
+        f"settings tried"
     )
 
 
@@ -217,30 +264,44 @@ def main() -> None:
     parser.add_argument("--out", default="results")
     parser.add_argument("--symbols", nargs="+", default=["xauusd", "us30"])
     parser.add_argument("--timeframes", nargs="+", default=["M1", "M5", "M15", "H1"])
+    parser.add_argument(
+        "--rank-by",
+        default="t_is",
+        choices=["t_is", "exp_is"],
+        help="t_is ranks by in-sample t, which does not reward tiny samples",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
     combinations = int(np.prod([len(v) for v in GRID.values()])) * len(TARGETS)
     print(
-        f"grid: {combinations:,} settings per symbol/timeframe "
+        f"grid: {combinations:,} settings, scored on "
+        f"{' + '.join(s.upper() for s in args.symbols)} together "
         f"(in-sample {IN_SAMPLE_FRACTION:.0%} / out-of-sample "
         f"{1 - IN_SAMPLE_FRACTION:.0%})"
     )
 
     rows: list[dict] = []
+    datasets = [
+        d
+        for d in discover_datasets(args.data, args.timeframes)
+        if d.symbol in args.symbols
+    ]
 
-    for dataset in discover_datasets(args.data, args.timeframes):
-        if dataset.symbol not in args.symbols:
+    for timeframe in args.timeframes:
+        group = [d for d in datasets if d.timeframe == timeframe]
+
+        if not group:
             continue
 
         started = time.time()
-        df = load_ohlc(dataset.path)
-        found = search_one(df, dataset.spec, dataset.symbol, dataset.timeframe)
+        frames = {d.symbol: load_ohlc(d.path) for d in group}
+        found = search(group, frames, timeframe)
         rows.extend(found)
 
         print(
-            f"  {dataset.symbol} {dataset.timeframe}: {len(found):,} kept "
+            f"  {timeframe}: {len(found):,} settings kept "
             f"({time.time() - started:.0f}s)",
             flush=True,
         )
@@ -248,9 +309,8 @@ def main() -> None:
     results = pd.DataFrame(rows)
     results.to_csv(os.path.join(args.out, "optimise.csv"), index=False)
 
-    for symbol in args.symbols:
-        for timeframe in args.timeframes:
-            report(results, symbol, timeframe)
+    for timeframe in args.timeframes:
+        report(results, timeframe, args.rank_by)
 
     print(f"\nwrote {os.path.join(args.out, 'optimise.csv')}")
 

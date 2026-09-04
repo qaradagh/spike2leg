@@ -25,27 +25,32 @@ import pandas as pd
 from .config import Config
 from .data import discover_datasets, load_ohlc
 from .engine import detect_signals, simulate
-from .optimise import GRID, TARGETS, retarget
+from .optimise import GRID, TARGETS, config_for, retarget
 
-MIN_TRADES_PER_FOLD = 8
+MIN_TRADES_PER_FOLD = 25
 
 
 def fold_of(times: pd.Series, edges: pd.DatetimeIndex) -> np.ndarray:
     return np.searchsorted(edges.to_numpy(), times.to_numpy(), side="right") - 1
 
 
-def collect(df: pd.DataFrame, spec, folds: int) -> tuple[pd.DataFrame, list]:
-    """Per-setting, per-fold trade count and total R."""
+def collect(datasets, frames: dict, folds: int) -> tuple[pd.DataFrame, list]:
+    """Per-setting, per-fold trade count and total R, pooled over symbols.
 
-    edges = pd.DatetimeIndex(
-        [df.index[int(len(df) * i / folds)] for i in range(folds)]
-    )
+    A setting is scored on gold and the Dow together, so it cannot be chosen
+    for fitting one of them. Each symbol is cut into folds at its own dates,
+    since their histories do not line up.
+    """
 
-    base = Config(
-        entry_mode="fill_fraction",
-        fill_fraction=0.2,
-        spread_points=spec.typical_spread_points,
-    )
+    edges = {
+        d.symbol: pd.DatetimeIndex(
+            [
+                frames[d.symbol].index[int(len(frames[d.symbol]) * i / folds)]
+                for i in range(folds)
+            ]
+        )
+        for d in datasets
+    }
 
     keys = list(GRID)
     rows: list[dict] = []
@@ -54,45 +59,47 @@ def collect(df: pd.DataFrame, spec, folds: int) -> tuple[pd.DataFrame, list]:
     for values in itertools.product(*(GRID[k] for k in keys)):
         settings = dict(zip(keys, values))
 
-        cfg = base.with_(
-            spike_candle_size=settings["spike_candle_size"],
-            pgap_points=settings["pgap_points"],
-            max_sl_distance_points=settings["max_sl_distance_points"],
-            use_ema_filter=settings["ema_period"] > 0,
-            ema_period=max(settings["ema_period"], 2),
-            use_trend_filter=settings["max_opposite_moves"] >= 0,
-            max_opposite_moves=max(settings["max_opposite_moves"], 0),
-            use_time_filter=settings["time_window_minutes"] > 0,
-            time_window_minutes=max(settings["time_window_minutes"], 1),
-        )
+        found = {}
 
-        signals, _ = detect_signals(df, cfg, spec)
-
-        if len(signals) < folds * MIN_TRADES_PER_FOLD:
-            continue
+        for dataset in datasets:
+            base = Config(
+                entry_mode="fill_fraction",
+                fill_fraction=0.2,
+                spread_points=dataset.spec.typical_spread_points,
+            )
+            cfg = config_for(base, settings)
+            signals, _ = detect_signals(frames[dataset.symbol], cfg, dataset.spec)
+            found[dataset.symbol] = (cfg, signals)
 
         for target in TARGETS:
-            trades = simulate(
-                df, retarget(signals, target), cfg.with_(tp_r=target), spec
-            )
+            row = {f"n{f}": 0 for f in range(folds)}
+            row.update({f"R{f}": 0.0 for f in range(folds)})
 
-            if trades.empty:
-                continue
+            for dataset in datasets:
+                cfg, signals = found[dataset.symbol]
 
-            which = fold_of(trades["entry_time"], edges)
+                if not signals:
+                    continue
 
-            row = {}
-            usable = True
+                trades = simulate(
+                    frames[dataset.symbol],
+                    retarget(signals, target),
+                    cfg.with_(tp_r=target),
+                    dataset.spec,
+                )
 
-            for fold in range(folds):
-                r = trades["R"].to_numpy()[which == fold]
-                row[f"n{fold}"] = len(r)
-                row[f"R{fold}"] = float(r.sum())
+                if trades.empty:
+                    continue
 
-                if len(r) < MIN_TRADES_PER_FOLD:
-                    usable = False
+                which = fold_of(trades["entry_time"], edges[dataset.symbol])
+                r = trades["R"].to_numpy()
 
-            if not usable:
+                for fold in range(folds):
+                    picked = r[which == fold]
+                    row[f"n{fold}"] += len(picked)
+                    row[f"R{fold}"] += float(picked.sum())
+
+            if any(row[f"n{f}"] < MIN_TRADES_PER_FOLD for f in range(folds)):
                 continue
 
             rows.append(row)
@@ -139,26 +146,34 @@ def main() -> None:
     parser.add_argument("--data", required=True)
     parser.add_argument("--out", default="results")
     parser.add_argument("--symbols", nargs="+", default=["xauusd", "us30"])
-    parser.add_argument("--timeframes", nargs="+", default=["M1", "M5", "M15"])
+    parser.add_argument("--timeframes", nargs="+", default=["M1", "M5", "M15", "H1"])
     parser.add_argument("--folds", type=int, default=5)
-    parser.add_argument("--blind-runs", type=int, default=200)
+    parser.add_argument("--blind-runs", type=int, default=400)
     parser.add_argument("--seed", type=int, default=20260903)
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     rng = np.random.default_rng(args.seed)
 
+    datasets = [
+        d
+        for d in discover_datasets(args.data, args.timeframes)
+        if d.symbol in args.symbols
+    ]
+
     summary: list[dict] = []
 
-    for dataset in discover_datasets(args.data, args.timeframes):
-        if dataset.symbol not in args.symbols:
+    for timeframe in args.timeframes:
+        group = [d for d in datasets if d.timeframe == timeframe]
+
+        if not group:
             continue
 
-        df = load_ohlc(dataset.path)
-        table, labels = collect(df, dataset.spec, args.folds)
+        frames = {d.symbol: load_ohlc(d.path) for d in group}
+        table, labels = collect(group, frames, args.folds)
 
         if table.empty:
-            print(f"{dataset.symbol} {dataset.timeframe}: no setting survived")
+            print(f"\n{timeframe}: no setting traded enough in every fold")
             continue
 
         result = walk(table, args.folds, rng)
@@ -173,10 +188,10 @@ def main() -> None:
         keys = list(GRID) + ["tp_r"]
         picks = [dict(zip(keys, labels[i])) for i in result["chosen"]]
 
-        print(f"\n{'=' * 74}")
+        print(f"\n{'=' * 78}")
         print(
-            f"{dataset.symbol.upper()} {dataset.timeframe}  --  "
-            f"{len(table):,} settings, {args.folds} folds"
+            f"{timeframe}  --  {len(table):,} settings, {args.folds} folds, "
+            f"{' + '.join(s.upper() for s in args.symbols)}"
         )
         print(
             f"  walk-forward   : {result['picked_exp']:+.4f} R over "
@@ -195,7 +210,7 @@ def main() -> None:
 
         for fold, pick in enumerate(picks, start=1):
             print(
-                f"    fold {fold} -> spike {pick['spike_candle_size']}, "
+                f"    fold {fold + 1} <- spike {pick['spike_candle_size']}, "
                 f"gap {pick['pgap_points']}, maxSL {pick['max_sl_distance_points']}, "
                 f"ema {pick['ema_period'] or 'off'}, "
                 f"trend {pick['max_opposite_moves'] if pick['max_opposite_moves'] >= 0 else 'off'}, "
@@ -205,8 +220,7 @@ def main() -> None:
 
         summary.append(
             {
-                "symbol": dataset.symbol,
-                "timeframe": dataset.timeframe,
+                "timeframe": timeframe,
                 "settings": len(table),
                 "walkforward_exp": result["picked_exp"],
                 "walkforward_trades": result["picked_n"],
